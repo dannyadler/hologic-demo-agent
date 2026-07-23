@@ -20,6 +20,7 @@ Keys: e=error event (+ log bundle), x=exam, q=quit
 import gzip
 import json
 import os
+import shutil
 import sqlite3
 import ssl
 import sys
@@ -33,7 +34,7 @@ import paho.mqtt.client as mqtt
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.2.1"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -373,8 +374,7 @@ def fake_logs(device_id, code, sw):
 
 
 def disk_free_gb():
-    s = os.statvfs(HERE)
-    return s.f_bavail * s.f_frsize / 2**30
+    return shutil.disk_usage(HERE).free / 2**30  # cross-platform (statvfs is Unix-only)
 
 
 def log(msg):
