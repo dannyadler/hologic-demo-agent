@@ -1,0 +1,15 @@
+{
+  "deviceId": "DIM-4521",
+  "connectionClientId": "dev_DIM-4521",
+  "iotEndpoint": "a35mhefb5kimht-ats.iot.us-east-1.amazonaws.com",
+  "apiBase": "https://api.dev.demo2.biot-med.com",
+  "ownerOrganizationId": "0e9cf31f-7a5f-4377-bbbb-71cef65d1078",
+  "templates": {
+    "deviceEvent": "3573d773-0c70-4b4e-bb57-46be3d086815",
+    "logBundle": "5c309d4c-b1d1-4b4b-8ec0-0c1e3c200982"
+  },
+  "statusIntervalSec": 10,
+  "reconnectMinSec": 1,
+  "reconnectMaxSec": 30,
+  "debugShadow": false
+}
