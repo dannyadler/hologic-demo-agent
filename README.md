@@ -6,6 +6,8 @@ presale demo (meeting week of 2026-08-03). Companion portal:
 [hologic-nexgen-connectivity](https://github.com/dannyadler/hologic-nexgen-connectivity)
 (Lovable, BioT REST).
 
+Runs on macOS and Windows 11 (ARM64, verified live under UTM on Apple Silicon).
+
 ## What it implements (all live against BioT 2.4.1)
 
 | Capability | Hologic questionnaire | Mechanism |
@@ -21,13 +23,13 @@ presale demo (meeting week of 2026-08-03). Companion portal:
 ## Run
 
 ```sh
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # Windows: python -m venv .venv && .venv\Scripts\activate
 pip install paho-mqtt
-python3 agent.py
+python agent.py
 ```
 
 Keys: `x` exam, `e` error event + log bundle, `q` quit.
-Self-check: `python3 test_queue.py`. Set `"debugShadow": true` in config.json to
+Self-check: `python test_queue.py`. Set `"debugShadow": true` in config.json to
 log raw shadow traffic.
 
 ## Files
@@ -46,6 +48,8 @@ log raw shadow traffic.
 - Generic-entity create requires `_templateId`, `_name`, `_ownerOrganization:{id}` (org-scoped) — V1 API on Demo2. Works with a DEVICE-type token (verified live).
 - File upload: POST `/file/v1/files/upload` `{name, mimeType}` → `{id, signedUrl}` → PUT bytes to signedUrl → attach `{id}` to the entity's FILE attribute (verified live with a device token).
 - Don't call `wait_for_publish()` inside paho callbacks (deadlocks the network loop).
+- Cross-platform: use `shutil.disk_usage` not `os.statvfs` (Unix-only).
+- One clientId per running agent — two agents (e.g. Mac + VM) with `dev_DIM-4521` fight over the MQTT connection. Retire one before starting the other.
 
 ## Hardening backlog for R&D (deliberate demo shortcuts)
 
