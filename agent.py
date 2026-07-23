@@ -14,7 +14,8 @@ to BioT Demo2 over MQTT/mTLS, following the same flow as a real device:
     logs, uploads them via the File API, and registers an hg_log_bundle
   - persistent device state (installed SW version, exam counter) across restarts
 
-Run:  python3 agent.py            (config.json in the same folder)
+Run:  python3 agent.py            (console; config.json in the same folder)
+      python3 agent_gui.py        (GUI device console — operator-approved OTA)
 Keys: e=error event (+ log bundle), x=exam, q=quit
 """
 import gzip
@@ -34,7 +35,7 @@ import paho.mqtt.client as mqtt
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.2.1"
+AGENT_VERSION = "1.3.0"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -116,6 +117,8 @@ class Agent:
         self.last_error = ""
         self.updating = False
         self.stop = False
+        self.require_manual_ota = False   # GUI sets True: operator must click Install (Q7)
+        self.pending_ota = None           # (version_name, reported) awaiting operator approval
         self._token = None
         self._token_evt = threading.Event()
 
@@ -187,7 +190,7 @@ class Agent:
             text = res.read().decode()
             return json.loads(text) if text else {}
 
-    # -- error event + log bundle
+    # -- error event + log bundle (W4)
     def handle_error_event(self):
         code = f"E-{random.randint(1000,9999)}"
         self.last_error = code
@@ -254,7 +257,11 @@ class Agent:
             if name:
                 reported["hgm_targetSwName"] = name
             if name and name != self.sw_version and not self.updating:
-                self.run_ota(name, reported)
+                if self.require_manual_ota:
+                    self.pending_ota = (name, reported)
+                    log(f"OTA: approved update {name} available — awaiting operator install")
+                else:
+                    self.run_ota(name, reported)
             elif name and name == self.sw_version:
                 log(f"CONFIG: target SW {name} already installed")
                 self.report_config(reported)
@@ -278,6 +285,20 @@ class Agent:
         self.updating = False
         log(f"OTA: SUCCESS — {old} -> {version_name}")
         self.report_config(reported)
+        self.send_status()
+
+    def approve_pending_ota(self):
+        """Operator clicked Install in the GUI (Q7: end user approves before install)."""
+        if not self.pending_ota or self.updating:
+            return
+        name, reported = self.pending_ota
+        self.pending_ota = None
+        threading.Thread(target=self.run_ota, args=(name, reported), daemon=True).start()
+
+    def perform_exam(self):
+        self.exam_count += 1
+        self.store.set("exam_count", self.exam_count)
+        log(f"exam performed, total={self.exam_count}")
         self.send_status()
 
     def report_config(self, reported):
@@ -336,10 +357,7 @@ class Agent:
             if k == "e":
                 self.handle_error_event()
             elif k == "x":
-                self.exam_count += 1
-                self.store.set("exam_count", self.exam_count)
-                log(f"exam performed, total={self.exam_count}")
-                self.send_status()
+                self.perform_exam()
             elif k == "q":
                 self.stop = True
                 return
@@ -377,8 +395,17 @@ def disk_free_gb():
     return shutil.disk_usage(HERE).free / 2**30  # cross-platform (statvfs is Unix-only)
 
 
+LOG_SINKS = []  # optional callables(str): UIs subscribe here; console print always happens
+
+
 def log(msg):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    print(line, flush=True)
+    for sink in list(LOG_SINKS):
+        try:
+            sink(line)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
