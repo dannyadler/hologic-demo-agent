@@ -35,9 +35,18 @@ import paho.mqtt.client as mqtt
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.3.1"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
+
+# HTTPS REST verification: freshly installed Windows Python has no CA bundle, so
+# urllib can't verify the public cert of the API endpoint. Prefer certifi's
+# bundle; fall back to the platform default (macOS ships one).
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    _SSL_CTX = ssl.create_default_context()
 
 
 # ---------------------------------------------------------------- store ----
@@ -186,7 +195,7 @@ class Agent:
         if not path.startswith("http"):
             req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", content_type)
-        with urllib.request.urlopen(req, timeout=30) as res:
+        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as res:
             text = res.read().decode()
             return json.loads(text) if text else {}
 
