@@ -14,14 +14,14 @@ to BioT Demo2 over MQTT/mTLS, following the same flow as a real device:
     logs, uploads them via the File API, and registers an hg_log_bundle
   - persistent device state (installed SW version, exam counter) across restarts
 
-Run:  python3 agent.py            (console; config.json in the same folder)
-      python3 agent_gui.py        (GUI device console — operator-approved OTA)
+Run:  python3 agent.py            (config.json in the same folder)
 Keys: e=error event (+ log bundle), x=exam, q=quit
 """
 import gzip
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import ssl
 import sys
@@ -29,13 +29,14 @@ import threading
 import time
 import random
 import urllib.request
+from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.3.1"
+AGENT_VERSION = "1.4.0"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -404,6 +405,58 @@ def disk_free_gb():
     return shutil.disk_usage(HERE).free / 2**30  # cross-platform (statvfs is Unix-only)
 
 
+# ---------------------------------------------------- pre-install checks ----
+# Real network pre-flight for the onboarding wizard and the standalone
+# validator (`python agent.py --preflight`). Covers Hologic Q6: endpoint
+# reachability, DNS, port, and TLS-interception detection before install.
+def _host_of(url):
+    u = urlparse(url if "://" in url else "https://" + url)
+    return u.hostname
+
+
+def _tcp_check(name, host, port):
+    try:
+        with socket.create_connection((host, port), timeout=8):
+            return {"name": name, "ok": True, "detail": f"{host}:{port} reachable"}
+    except Exception as e:
+        return {"name": name, "ok": False, "detail": f"{host}:{port} unreachable — {e}"}
+
+
+def _tls_check(name, host, port=443):
+    # A verified handshake failing on an otherwise-reachable host is the classic
+    # signal of a corporate TLS-inspection proxy re-signing with a private CA.
+    try:
+        with socket.create_connection((host, port), timeout=8) as sock:
+            with _SSL_CTX.wrap_socket(sock, server_hostname=host) as s:
+                issuer = dict(x[0] for x in s.getpeercert().get("issuer", ())).get(
+                    "organizationName", "unknown")
+                return {"name": name, "ok": True, "detail": f"TLS verified, issuer: {issuer}"}
+    except ssl.SSLCertVerificationError:
+        return {"name": name, "ok": False,
+                "detail": "certificate not trusted — likely TLS interception/proxy; allowlist the endpoint"}
+    except Exception as e:
+        return {"name": name, "ok": False, "detail": str(e)}
+
+
+def _dns_check(name, host):
+    try:
+        return {"name": name, "ok": True, "detail": f"{host} -> {socket.gethostbyname(host)}"}
+    except Exception as e:
+        return {"name": name, "ok": False, "detail": f"{host}: {e}"}
+
+
+def preflight_checks(cfg=CFG):
+    """Return [{name, ok, detail}] for the device's connectivity prerequisites."""
+    iot = cfg["iotEndpoint"]
+    api_host = _host_of(cfg.get("apiBase", ""))
+    return [
+        _dns_check("IoT endpoint DNS resolves", iot),
+        _dns_check("API endpoint DNS resolves", api_host),
+        _tcp_check("MQTT/TLS port open (8883)", iot, 8883),
+        _tls_check("API TLS handshake (443)", api_host),
+    ]
+
+
 LOG_SINKS = []  # optional callables(str): UIs subscribe here; console print always happens
 
 
@@ -418,4 +471,11 @@ def log(msg):
 
 
 if __name__ == "__main__":
+    if "--preflight" in sys.argv:
+        all_ok = True
+        print("Pre-install network validation:")
+        for r in preflight_checks():
+            print(f"  [{'PASS' if r['ok'] else 'FAIL'}] {r['name']} — {r['detail']}")
+            all_ok &= r["ok"]
+        sys.exit(0 if all_ok else 1)
     Agent().run()
