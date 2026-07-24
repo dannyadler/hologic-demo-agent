@@ -9,7 +9,7 @@ core as agent.py; this only adds a UI. Demonstrates:
     (DNS, port 8883, API TLS handshake / interception) before connecting.
   - Q7 Operator-approved self-update: updates arrive as an approved package and
     the operator clicks Install.
-  - Q32 Last known-good shown on the console; automatic rollback logged live.
+  - Q14 Capture Config Backup button; Q32 Last Known Good tile + auto-rollback.
 
 Run:  python agent_gui.py                 (first run shows the wizard)
       python agent_gui.py --reenroll      (replay the wizard for a demo)
@@ -255,6 +255,9 @@ class Console:
         tk.Button(btns, text="Raise Error + Capture Logs", relief="flat", bg="#EFEDEB",
                   font=("Helvetica", 11), command=lambda: self.bg(self.agent.handle_error_event)
                   ).pack(side="left", padx=8)
+        tk.Button(btns, text="Capture Config Backup", relief="flat", bg="#EFEDEB",
+                  font=("Helvetica", 11), command=lambda: self.agent.capture_config_backup("manual")
+                  ).pack(side="left")
 
         ensure_started(self.agent)
         self.tick()

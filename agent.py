@@ -12,10 +12,11 @@ to BioT Demo2 over MQTT/mTLS, following the same flow as a real device:
   - device REST API access via the MQTT token flow (<clientId>/from-device/token)
   - error events: creates an hg_device_event entity, captures + gzips device
     logs, uploads them via the File API, and registers an hg_log_bundle
+  - config backup capture + shadow-triggered restore (hg_config_backup)
   - persistent device state (installed SW version, exam counter) across restarts
 
 Run:  python3 agent.py            (config.json in the same folder)
-Keys: e=error event (+ log bundle), x=exam, q=quit
+Keys: e=error event (+ log bundle), x=exam, b=config backup, q=quit
 """
 import gzip
 import json
@@ -42,7 +43,7 @@ else:
     HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.5.0"
+AGENT_VERSION = "1.6.0"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -113,7 +114,7 @@ class Agent:
         self.device_id = CFG["deviceId"]
         self.api = CFG.get("apiBase", "https://api.dev.demo2.biot-med.com")
         self.org_id = CFG["ownerOrganizationId"]
-        self.tpl = CFG["templates"]  # {deviceEvent, logBundle}
+        self.tpl = CFG["templates"]  # {deviceEvent, logBundle, configBackup}
 
         self.status_topic = f"{self.client_id}/from-device/status"
         shadow = f"$aws/things/{self.client_id}/shadow/name/configuration"
@@ -138,6 +139,9 @@ class Agent:
         self.prev_sw_version = self.store.get("prev_sw_version", "")  # last known-good (Q32)
         self.failed_versions = set()      # versions that failed post-install validation (Q32)
         self.last_update_status = self.store.get("last_update_status", "")
+        self.restore_attr = CFG.get("restoreAttr", "hgm_restoreBackupId")  # Q14 restore trigger
+        self.last_restore_id = self.store.get("last_restore_id", "")
+        self.restoring = False
         self._token = None
         self._token_evt = threading.Event()
 
@@ -258,6 +262,88 @@ class Agent:
         except Exception as e:
             log(f"EVENT: FAILED — {e}")
 
+    # -- configuration backup + restore (Q14)
+    def _collect_config(self):
+        """Snapshot the device's Hologic-defined configuration set.
+        ponytail: a real agent reads a Hologic-defined manifest of files,
+        registry keys, and calibration data; here we snapshot the agent state
+        plus a representative device config block."""
+        return {
+            "deviceId": self.device_id,
+            "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "agentVersion": AGENT_VERSION,
+            "installedSwVersion": self.sw_version,
+            "logLevel": self.log_level,
+            "examCountTotal": self.exam_count,
+            "deviceConfig": {
+                "acquisition": {"kv": 28, "mas": 80, "gridMode": "auto", "detectorGain": 1.02},
+                "network": {"dhcp": True, "ntp": "pool.hologic.local"},
+                "dicom": {"aeTitle": f"HG_{self.device_id.replace('-', '')}", "port": 104},
+                "calibration": {"lastFlatField": "2026-07-20", "detectorTempSetpointC": 31.5},
+            },
+        }
+
+    def capture_config_backup(self, trigger="manual"):
+        threading.Thread(target=self._do_config_backup, args=(trigger,), daemon=True).start()
+
+    def _do_config_backup(self, trigger):
+        try:
+            if not self.tpl.get("configBackup"):
+                log("BACKUP: no configBackup template configured — skipping")
+                return
+            log(f"BACKUP: capturing device configuration ({trigger})...")
+            token = self.get_api_token()
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            blob = gzip.compress(json.dumps(self._collect_config(), indent=2).encode())
+            fname = f"{self.device_id}-config-{int(time.time())}.json.gz"
+            version = f"cfg-{self.sw_version}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+            f = self.api_request("POST", "/file/v1/files/upload", token,
+                                 body={"name": fname, "mimeType": "application/gzip"})
+            self.api_request("PUT", f["signedUrl"], token, data=blob, content_type="application/gzip")
+            log(f"BACKUP: snapshot uploaded ({fname}, {len(blob)} bytes)")
+            self.api_request("POST", "/generic-entity/v1/generic-entities", token, body={
+                "_templateId": self.tpl["configBackup"],
+                "_name": fname,
+                "_ownerOrganization": {"id": self.org_id},
+                "hg_cfgCapturedAt": now,
+                "hg_cfgTrigger": trigger,
+                "hg_cfgStatus": "complete",
+                "hg_cfgVersion": version,
+                "hg_cfgFile": {"id": f["id"]},
+                "hg_cfgDevice": {"id": self.device_id},
+            })
+            log(f"BACKUP: hg_config_backup registered ({version}) — visible in the portal Backups tab")
+        except Exception as e:
+            log(f"BACKUP: FAILED — {e}")
+
+    def _do_restore(self, backup_id):
+        self.restoring = True
+        try:
+            log(f"RESTORE: fetching config backup {backup_id}...")
+            token = self.get_api_token()
+            ent = self.api_request("GET", f"/generic-entity/v1/generic-entities/{backup_id}", token)
+            fileref = ent.get("hg_cfgFile") or {}
+            file_id = fileref.get("id") if isinstance(fileref, dict) else fileref
+            if not file_id:
+                raise RuntimeError("backup has no config file attached")
+            dl = self.api_request("GET", f"/file/v1/files/{file_id}/download", token)
+            with urllib.request.urlopen(dl["signedUrl"], timeout=30, context=_SSL_CTX) as r:
+                cfg = json.loads(gzip.decompress(r.read()))
+            sections = list((cfg.get("deviceConfig") or {}).keys())
+            log(f"RESTORE: applying snapshot from {cfg.get('capturedAt')} — sections: {', '.join(sections)}")
+            if cfg.get("logLevel"):
+                self.log_level = cfg["logLevel"]
+                self.store.set("log_level", self.log_level)
+            self.last_restore_id = backup_id
+            self.store.set("last_restore_id", backup_id)
+            log("RESTORE: complete — device configuration restored to the selected snapshot")
+        except Exception as e:
+            log(f"RESTORE: FAILED — {e}")
+        finally:
+            self.restoring = False
+            self.report_config({self.restore_attr: backup_id})  # clear the shadow delta
+            self.send_status()
+
     # -- remote configuration
     def apply_config(self, state):
         if "hgm_logLevel" in state and state["hgm_logLevel"]:
@@ -265,6 +351,10 @@ class Agent:
             self.store.set("log_level", self.log_level)
             log(f"CONFIG: log level -> {self.log_level}")
             self.report_config({"hgm_logLevel": self.log_level})
+        rid = state.get(self.restore_attr)
+        if rid and rid != self.last_restore_id and not self.restoring:
+            log(f"RESTORE: restore request received for backup {rid}")
+            threading.Thread(target=self._do_restore, args=(rid,), daemon=True).start()
         target = state.get("hgm_targetSwVersion")
         name = state.get("hgm_targetSwName")
         if not name and isinstance(target, dict):
@@ -414,13 +504,15 @@ class Agent:
     def stdin_loop(self):
         if not sys.stdin:  # windowed exe has no console/stdin
             return
-        log("keys: e=error event (+ log bundle), x=exam performed, q=quit")
+        log("keys: e=error event (+ log bundle), x=exam performed, b=config backup, q=quit")
         for line in sys.stdin:
             k = line.strip().lower()
             if k == "e":
                 self.handle_error_event()
             elif k == "x":
                 self.perform_exam()
+            elif k == "b":
+                self.capture_config_backup()
             elif k == "q":
                 self.stop = True
                 return

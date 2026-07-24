@@ -6,8 +6,10 @@
   "ownerOrganizationId": "0e9cf31f-7a5f-4377-bbbb-71cef65d1078",
   "templates": {
     "deviceEvent": "3573d773-0c70-4b4e-bb57-46be3d086815",
-    "logBundle": "5c309d4c-b1d1-4b4b-8ec0-0c1e3c200982"
+    "logBundle": "5c309d4c-b1d1-4b4b-8ec0-0c1e3c200982",
+    "configBackup": "6396a7ad-a74b-4e60-ab37-23470221292b"
   },
+  "restoreAttr": "hgm_restoreBackupId",
   "statusIntervalSec": 10,
   "reconnectMinSec": 1,
   "reconnectMaxSec": 30,
