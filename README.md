@@ -29,6 +29,7 @@ python3 agent_gui.py            # GUI: first launch shows the Activation wizard 
 python3 agent_gui.py --reenroll # replay the wizard for a demo
 python3 agent.py                # headless console (keys: x exam, e error, q quit)
 python3 agent.py --preflight    # standalone pre-install network validator (Q6)
+python3 agent.py --silent       # unattended enrollment: validate + run headless (Q2)
 ```
 
 The GUI first-run **Activation wizard** (Q2, no IT specialist): operator enters
@@ -41,10 +42,26 @@ clears it to re-run the wizard.
 Self-check: `python3 test_queue.py`. Set `"debugShadow": true` in config.json to
 log raw shadow traffic.
 
+## Package as a double-click exe (Windows, no Python on the target)
+
+Run once on a Windows device:
+
+```
+build.bat
+```
+
+Produces `dist\HGDeviceConsole.exe` (operator GUI: onboarding wizard + console)
+and `dist\HGDeviceAgent.exe` (headless; `--preflight`, `--silent`). Ship the exe
+next to `config.json` and the `certs\` folder — when frozen the agent looks for
+both beside the executable, not inside the bundle. Unattended fleet rollout:
+`HGDeviceAgent.exe --silent` validates the network, marks enrolled, and runs
+headless (SCCM/Intune/GPO friendly).
+
 ## Files
 
 - `agent.py` — everything (single file by design for the demo)
 - `agent_gui.py` — tkinter GUI: onboarding wizard + device console
+- `build.bat` — PyInstaller build of the two Windows executables
 - `config.json` — device identity, endpoints, org and template IDs (no secrets)
 - `certs/` — NOT in git. Per-device X.509 cert from BioT (portal: device → generate certificate). Place `certificate.pem`, `private_key.pem`, `ca.pem` here.
 - `test_queue.py` — offline-queue self-check
@@ -63,7 +80,7 @@ log raw shadow traffic.
 
 1. OTA is simulated (`run_ota` sleeps): implement real package download via the File API, signature verification against a Hologic-pinned key, A/B install with rollback (Hologic Q7/Q32).
 2. Log capture is generated content: collect real Hologic-defined paths/artifacts per product line (their Q11/Q14 model: Hologic defines the manifest, agent executes).
-3. Onboarding wizard + pre-flight validation are built (Q2/Q6); credential provisioning is pre-staged. Remaining: package as a double-click exe/MSI (PyInstaller/WiX), silent-install answer file, Windows service registration, and real fleet-provisioning cert issuance triggered by the enrollment code.
+3. Onboarding wizard + pre-flight validation are built (Q2/Q6); credential provisioning is pre-staged. Remaining: real fleet-provisioning cert issuance triggered by the enrollment code, code-signed exe/MSI, and Windows service registration. (PyInstaller build in `build.bat`.)
 4. Config: only `hgm_targetSwVersion/Name` + `hgm_logLevel` handled; generalize to a config-schema-driven handler.
 5. Token handling: fresh token per batch (per BioT docs); add retry/backoff and 403-expiry handling.
 6. Queue: add size cap + overflow alert (their Q31 "no silent loss" clause), currently unbounded.

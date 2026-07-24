@@ -33,10 +33,16 @@ from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# When frozen by PyInstaller, __file__ points into the temp extraction dir, so
+# config.json and certs/ must be found next to the .exe instead. Keeping them
+# external (not bundled) is also correct: certs are per-device and secret.
+if getattr(sys, "frozen", False):
+    HERE = os.path.dirname(sys.executable)
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.4.1"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -361,6 +367,8 @@ class Agent:
 
     # -- demo triggers (stdin)
     def stdin_loop(self):
+        if not sys.stdin:  # windowed exe has no console/stdin
+            return
         log("keys: e=error event (+ log bundle), x=exam performed, q=quit")
         for line in sys.stdin:
             k = line.strip().lower()
@@ -462,7 +470,10 @@ LOG_SINKS = []  # optional callables(str): UIs subscribe here; console print alw
 
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)  # windowed exe may have no stdout
+    except Exception:
+        pass
     for sink in list(LOG_SINKS):
         try:
             sink(line)
@@ -470,12 +481,27 @@ def log(msg):
             pass
 
 
+def _run_preflight_cli():
+    all_ok = True
+    print("Pre-install network validation:")
+    for r in preflight_checks():
+        print(f"  [{'PASS' if r['ok'] else 'FAIL'}] {r['name']} — {r['detail']}")
+        all_ok &= r["ok"]
+    return all_ok
+
+
 if __name__ == "__main__":
     if "--preflight" in sys.argv:
-        all_ok = True
-        print("Pre-install network validation:")
-        for r in preflight_checks():
-            print(f"  [{'PASS' if r['ok'] else 'FAIL'}] {r['name']} — {r['detail']}")
-            all_ok &= r["ok"]
-        sys.exit(0 if all_ok else 1)
+        sys.exit(0 if _run_preflight_cli() else 1)
+    if "--silent" in sys.argv:
+        # Unattended enrollment for fleet rollout (SCCM/Intune/GPO): validate the
+        # network, mark enrolled, then run headless. Non-zero exit on failure.
+        if not _run_preflight_cli():
+            print("Silent enrollment aborted: network prerequisites not met.")
+            sys.exit(1)
+        a = Agent()
+        a.store.set("enrolled", "1")
+        print(f"Silent enrollment OK — {a.device_id} running headless.")
+        a.run()
+        sys.exit(0)
     Agent().run()
