@@ -43,7 +43,7 @@ else:
     HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.6.1"
+AGENT_VERSION = "1.6.2"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -305,7 +305,7 @@ class Agent:
             log(f"BACKUP: snapshot uploaded ({fname}, {len(blob)} bytes)")
             self.api_request("POST", "/generic-entity/v1/generic-entities", token, body={
                 "_templateId": self.tpl["configBackup"],
-                "_name": fname,
+                "_name": f"cfg-{int(time.time())}",  # entity _name max 32 chars; full name is on the file + hg_cfgVersion
                 "_ownerOrganization": {"id": self.org_id},
                 "hg_cfgCapturedAt": now,
                 "hg_cfgTrigger": trigger,
