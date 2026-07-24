@@ -17,6 +17,7 @@ presale demo (meeting week of 2026-08-03). Companion portal:
 | Offline store-and-forward, chronological replay | Q31 | SQLite queue, drains on reconnect, no silent loss, queue depth reported |
 | OTA with Hologic approval gate | Q7/Q10 | `configuration` named shadow delta → simulated install → reported state + status |
 | Rollback + automatic disaster recovery | Q32 | tracks last known-good; post-install validation; a package failing validation auto-rolls-back and is not retried. Remote rollback = deploy a prior approved version |
+| Configuration backup & restore | Q14 | `b` key / portal button captures a versioned config snapshot (gzip → File API → hg_config_backup entity); restore is shadow-triggered (`hgm_restoreBackupId`): agent downloads the snapshot and re-applies it |
 | Device REST API access | — | MQTT token flow: publish empty to `<clientId>/from-device/token`, JWT arrives on `to-device/token` |
 | Error events + event-triggered log retrieval | Q11 | `e` key → hg_device_event entity + gzipped log capture → File API upload → hg_log_bundle entity |
 | Persistent device state | — | SW version + exam counter survive restarts (SQLite kv) |
@@ -28,7 +29,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install paho-mqtt certifi
 python3 agent_gui.py            # GUI: first launch shows the Activation wizard (Q2)
 python3 agent_gui.py --reenroll # replay the wizard for a demo
-python3 agent.py                # headless console (keys: x exam, e error, q quit)
+python3 agent.py                # headless console (keys: x exam, e error, b backup, q quit)
 python3 agent.py --preflight    # standalone pre-install network validator (Q6)
 python3 agent.py --silent       # unattended enrollment: validate + run headless (Q2)
 ```
@@ -47,9 +48,14 @@ named with a `-bad` suffix (e.g. `AWS-1.14.0-bad`) or listed in config
 rolls back to the last known-good and refuses to retry the bad package. Remote
 rollback is just deploying a prior approved version from the portal.
 
+**Config backup/restore demo (Q14):** press `b` (or the portal "Capture backup"
+button) to snapshot the device config to an `hg_config_backup` entity; the portal
+Backups tab lists versioned snapshots and a Restore action sets `hgm_restoreBackupId`
+on the device, which the agent picks up over the shadow, downloads, and re-applies.
+
 Self-checks: `python3 test_queue.py` (offline queue), `python3 test_rollback.py`
-(validation + rollback). Set `"debugShadow": true` in config.json to log raw
-shadow traffic.
+(validation + rollback), `python3 test_backup.py` (config snapshot). Set
+`"debugShadow": true` in config.json to log raw shadow traffic.
 
 ## Package as a double-click exe (Windows, no Python on the target)
 
@@ -71,10 +77,11 @@ headless (SCCM/Intune/GPO friendly).
 - `agent.py` — agent core (single file by design for the demo)
 - `agent_gui.py` — tkinter GUI: onboarding wizard + device console
 - `build.bat` — PyInstaller build of the two Windows executables
-- `config.json` — device identity, endpoints, org and template IDs (no secrets). Optional `knownBadVersions` list forces post-install validation to fail (Q32 rollback demo).
+- `config.json` — device identity, endpoints, org and template IDs (no secrets). Optional `knownBadVersions` list forces post-install validation to fail (Q32 rollback demo); `restoreAttr` names the CONFIGURATION attribute that triggers a restore.
 - `certs/` — NOT in git. Per-device X.509 cert from BioT (portal: device → generate certificate). Place `certificate.pem`, `private_key.pem`, `ca.pem` here.
 - `test_queue.py` — offline-queue self-check
 - `test_rollback.py` — post-install validation + rollback self-check (Q32)
+- `test_backup.py` — config-snapshot self-check (Q14)
 
 ## Platform contracts (live-verified, save your R&D the digging)
 
@@ -84,14 +91,15 @@ headless (SCCM/Intune/GPO friendly).
 - Report config changes back to `.../configuration/update` as `{"state":{"reported":{...}}}` or the delta refires forever.
 - Generic-entity create requires `_templateId`, `_name`, `_ownerOrganization:{id}` (org-scoped) — V1 API on Demo2.
 - File upload: POST `/file/v1/files/upload` `{name, mimeType}` → `{id, signedUrl}` → PUT bytes to signedUrl → attach `{id}` to the entity's FILE attribute.
+- File download: GET `/file/v1/files/{id}/download` → `{signedUrl}` → GET bytes from signedUrl (used by the config restore).
 - Don't call `wait_for_publish()` inside paho callbacks (deadlocks the network loop).
 
 ## Hardening backlog for R&D (deliberate demo shortcuts)
 
 1. OTA + rollback are simulated (`_apply_package` sleeps; `_validate_install` fails on a `-bad` version name or config `knownBadVersions`). Implement real package download via the File API, signature verification against a Hologic-pinned key, and a true A/B partition install so the rollback restores an image rather than re-fetching (Hologic Q7/Q32).
-2. Log capture is generated content: collect real Hologic-defined paths/artifacts per product line (their Q11/Q14 model: Hologic defines the manifest, agent executes).
+2. Log + config capture are generated content (`fake_logs`, `_collect_config`): collect real Hologic-defined paths/artifacts per product line (their Q11/Q14 model: Hologic defines the manifest, agent executes). Add snapshot diff/compare and a scheduled/pre-update backup trigger.
 3. Onboarding wizard + pre-flight validation are built (Q2/Q6); credential provisioning is pre-staged. Remaining: real fleet-provisioning cert issuance triggered by the enrollment code, code-signed exe/MSI, and Windows service registration. (PyInstaller build in `build.bat`.)
-4. Config: only `hgm_targetSwVersion/Name` + `hgm_logLevel` handled; generalize to a config-schema-driven handler.
+4. Config: only `hgm_targetSwVersion/Name`, `hgm_logLevel`, and `hgm_restoreBackupId` handled; generalize to a config-schema-driven handler.
 5. Token handling: fresh token per batch (per BioT docs); add retry/backoff and 403-expiry handling.
 6. Queue: add size cap + overflow alert (their Q31 "no silent loss" clause), currently unbounded.
 7. Status interval, backoff, and queue limits should come from remote configuration, not config.json.
