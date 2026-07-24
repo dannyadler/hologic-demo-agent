@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import random
+import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
@@ -43,7 +44,7 @@ else:
     HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.6.2"
+AGENT_VERSION = "1.6.3"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -211,9 +212,18 @@ class Agent:
         if not path.startswith("http"):
             req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", content_type)
-        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as res:
-            text = res.read().decode()
-            return json.loads(text) if text else {}
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as res:
+                text = res.read().decode()
+                return json.loads(text) if text else {}
+        except urllib.error.HTTPError as e:
+            # surface the server's validation message, not just the status line
+            detail = ""
+            try:
+                detail = e.read().decode()[:400]
+            except Exception:
+                pass
+            raise RuntimeError(f"HTTP {e.code} {method} {path.split('?')[0]}: {detail}") from None
 
     # -- error event + log bundle (W4)
     def handle_error_event(self):
