@@ -42,7 +42,7 @@ else:
     HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.4.1"
+AGENT_VERSION = "1.5.0"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -135,6 +135,9 @@ class Agent:
         self.stop = False
         self.require_manual_ota = False   # GUI sets True: operator must click Install (Q7)
         self.pending_ota = None           # (version_name, reported) awaiting operator approval
+        self.prev_sw_version = self.store.get("prev_sw_version", "")  # last known-good (Q32)
+        self.failed_versions = set()      # versions that failed post-install validation (Q32)
+        self.last_update_status = self.store.get("last_update_status", "")
         self._token = None
         self._token_evt = threading.Event()
 
@@ -272,6 +275,12 @@ class Agent:
                 reported["hgm_targetSwVersion"] = target
             if name:
                 reported["hgm_targetSwName"] = name
+            if name and name in self.failed_versions:
+                # A version that failed post-install validation is not retried; the
+                # device stays on the last known-good until a new target is approved.
+                log(f"OTA: {name} previously failed validation — not reinstalling; awaiting a new approved target")
+                self.report_config(reported)
+                return
             if name and name != self.sw_version and not self.updating:
                 if self.require_manual_ota:
                     self.pending_ota = (name, reported)
@@ -285,23 +294,59 @@ class Agent:
                 log("CONFIG: target SW reference received without a version name — waiting for hgm_targetSwName")
                 self.report_config(reported)
 
-    def run_ota(self, version_name, reported):
-        """Simulated software update: download, verify, install, report.
+    def _apply_package(self, version_name, label="update"):
+        """Simulated package apply: download, verify, install.
         ponytail: sleep-based simulation; a real device streams the package
         via the BioT file API and verifies its signature."""
-        self.updating = True
-        log(f"OTA: update available -> {version_name} (Hologic-approved package)")
-        for step, secs in [("downloading package", 3), ("verifying signature and integrity", 2),
+        for step, secs in [(f"{label}: downloading package", 3),
+                           ("verifying signature and integrity", 2),
                            ("installing (no reboot required)", 3)]:
             log(f"OTA: {step}...")
             time.sleep(secs)
-        old = self.sw_version
         self.sw_version = version_name
         self.store.set("sw_version", version_name)
-        self.updating = False
-        log(f"OTA: SUCCESS — {old} -> {version_name}")
-        self.report_config(reported)
-        self.send_status()
+
+    def _validate_install(self, version_name):
+        """Post-install health check (Q6 post-install / Q32 auto-rollback trigger).
+        ponytail: a real device runs a self-test suite; here a package whose
+        version name ends in '-bad' (or is listed in config knownBadVersions)
+        deterministically fails, so the automatic-rollback path is demoable."""
+        log("OTA: running post-install validation...")
+        time.sleep(1)
+        bad = version_name.lower().endswith("-bad") or version_name in CFG.get("knownBadVersions", [])
+        return not bad
+
+    def run_ota(self, version_name, reported):
+        """Install an approved package, validate it, and auto-roll-back on failure.
+        Preserves the prior version as last known-good (Q32)."""
+        self.updating = True
+        old = self.sw_version
+        log(f"OTA: update available -> {version_name} (Hologic-approved package)")
+        self._apply_package(version_name)
+        if self._validate_install(version_name):
+            self.prev_sw_version = old
+            self.store.set("prev_sw_version", old)
+            self.last_update_status = "ok"
+            self.store.set("last_update_status", "ok")
+            self.last_error = ""
+            self.updating = False
+            log(f"OTA: SUCCESS — {old} -> {version_name} (post-install validation passed)")
+            self.report_config(reported)
+            self.send_status()
+        else:
+            # Automated rollback to the last known-good state (Q32 sub-clause 3).
+            log(f"OTA: post-install validation FAILED for {version_name} — starting automatic rollback")
+            self.failed_versions.add(version_name)
+            self._apply_package(old, label="rollback to last known-good")
+            self.last_update_status = "rolled_back"
+            self.store.set("last_update_status", "rolled_back")
+            self.last_error = f"UPDATE_ROLLBACK {version_name}->{old}"
+            self.updating = False
+            log(f"OTA: ROLLED BACK to last known-good {old} — device operational, update rejected")
+            # Report the processed target so the shadow delta clears; the device
+            # will not retry this version (see failed_versions guard).
+            self.report_config(reported)
+            self.send_status()
 
     def approve_pending_ota(self):
         """Operator clicked Install in the GUI (Q7: end user approves before install)."""

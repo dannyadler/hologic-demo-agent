@@ -9,6 +9,7 @@ core as agent.py; this only adds a UI. Demonstrates:
     (DNS, port 8883, API TLS handshake / interception) before connecting.
   - Q7 Operator-approved self-update: updates arrive as an approved package and
     the operator clicks Install.
+  - Q32 Last known-good shown on the console; automatic rollback logged live.
 
 Run:  python agent_gui.py                 (first run shows the wizard)
       python agent_gui.py --reenroll      (replay the wizard for a demo)
@@ -216,7 +217,7 @@ class Console:
         grid = tk.Frame(self.frame, bg="white")
         grid.pack(fill="x", padx=16, pady=12)
         self.vals = {}
-        fields = ["Connection", "Installed SW", "Agent", "Total Exams", "Queue Depth", "Last Error"]
+        fields = ["Connection", "Installed SW", "Last Known Good", "Total Exams", "Queue Depth", "Last Error"]
         for i, f in enumerate(fields):
             r, c = divmod(i, 3)
             cell = tk.Frame(grid, bg="white")
@@ -275,7 +276,7 @@ class Console:
         self.vals["Connection"].config(text="Online" if a.connected else "Offline",
                                        fg=OK if a.connected else GREY)
         self.vals["Installed SW"].config(text=a.sw_version)
-        self.vals["Agent"].config(text=AGENT_VERSION)
+        self.vals["Last Known Good"].config(text=a.prev_sw_version or "—")
         self.vals["Total Exams"].config(text=str(a.exam_count))
         self.vals["Queue Depth"].config(text=str(a.store.depth()))
         self.vals["Last Error"].config(text=a.last_error or "—",
