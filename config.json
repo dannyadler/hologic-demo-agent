@@ -10,6 +10,7 @@
     "configBackup": "6396a7ad-a74b-4e60-ab37-23470221292b"
   },
   "restoreAttr": "hgm_restoreBackupId",
+  "captureAttr": "hgm_captureBackupNow",
   "statusIntervalSec": 10,
   "reconnectMinSec": 1,
   "reconnectMaxSec": 30,

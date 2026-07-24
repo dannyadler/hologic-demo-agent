@@ -43,7 +43,7 @@ else:
     HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json")))
 
-AGENT_VERSION = "1.6.0"
+AGENT_VERSION = "1.6.1"
 DEFAULT_SW_VERSION = "AWS-1.11.2"  # factory-installed device software version
 DEBUG_SHADOW = CFG.get("debugShadow", False)
 
@@ -140,7 +140,9 @@ class Agent:
         self.failed_versions = set()      # versions that failed post-install validation (Q32)
         self.last_update_status = self.store.get("last_update_status", "")
         self.restore_attr = CFG.get("restoreAttr", "hgm_restoreBackupId")  # Q14 restore trigger
+        self.capture_attr = CFG.get("captureAttr", "hgm_captureBackupNow")  # Q14 remote capture trigger
         self.last_restore_id = self.store.get("last_restore_id", "")
+        self.last_capture_nonce = self.store.get("last_capture_nonce", "")
         self.restoring = False
         self._token = None
         self._token_evt = threading.Event()
@@ -351,6 +353,13 @@ class Agent:
             self.store.set("log_level", self.log_level)
             log(f"CONFIG: log level -> {self.log_level}")
             self.report_config({"hgm_logLevel": self.log_level})
+        cap = state.get(self.capture_attr)
+        if cap and cap != self.last_capture_nonce:
+            self.last_capture_nonce = cap
+            self.store.set("last_capture_nonce", cap)
+            log("BACKUP: remote capture requested from portal")
+            self.capture_config_backup("on_demand")
+            self.report_config({self.capture_attr: cap})  # clear the shadow delta
         rid = state.get(self.restore_attr)
         if rid and rid != self.last_restore_id and not self.restoring:
             log(f"RESTORE: restore request received for backup {rid}")
